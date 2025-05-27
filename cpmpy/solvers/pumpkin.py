@@ -59,8 +59,8 @@ class CPM_pumpkin(SolverInterface):
     """
     Interface to Pumpkin's API
 
-    Requires that the 'pumpkin_py' python package is installed:
-    $ pip install pumpkin_py
+    Requires that the 'pumpkin_solver_py' python package is installed:
+    $ pip install pumpkin_solver_py
 
     Creates the following attributes (see parent constructor for more):
     - tpl_model: object, Pumpkin's model object
@@ -70,7 +70,7 @@ class CPM_pumpkin(SolverInterface):
     def supported():
         # try to import the package
         try:
-            import pumpkin_py as gp
+            import pumpkin_solver_py as gp
 
             return True
         except ImportError:
@@ -85,9 +85,11 @@ class CPM_pumpkin(SolverInterface):
         - subsolver: str, name of a subsolver (optional)
         """
         if not self.supported():
-            raise Exception("CPM_Pumpkin: Install the python package 'pumpkin_py'")
+            raise Exception(
+                "CPM_Pumpkin: Install the python package 'pumpkin_solver_py'"
+            )
 
-        from pumpkin_py import Model
+        from pumpkin_solver_py import Model
 
         assert subsolver is None  # unless you support subsolvers, see pysat or minizinc
 
@@ -130,12 +132,15 @@ class CPM_pumpkin(SolverInterface):
         """
 
         # Again, I don't know why this is necessary, but the PyO3 modules seem to be a bit wonky.
-        from pumpkin_py import (
+        from pumpkin_solver_py import (
             BoolExpression as PumpkinBool,
             IntExpression as PumpkinInt,
         )
-        from pumpkin_py import SatisfactionResult, SatisfactionUnderAssumptionsResult
-        from pumpkin_py.optimisation import OptimisationResult, Direction
+        from pumpkin_solver_py import (
+            SatisfactionResult,
+            SatisfactionUnderAssumptionsResult,
+        )
+        from pumpkin_solver_py.optimisation import OptimisationResult, Direction
 
         # ensure all vars are known to solver
         self.solver_vars(list(self.user_vars))
@@ -326,7 +331,15 @@ class CPM_pumpkin(SolverInterface):
         """
         # apply transformations
         cpm_cons = toplevel_list(cpm_expr)
-        supported = {"alldifferent", "cumulative", "min", "max", "element"}
+        supported = {
+            "alldifferent",
+            "cumulative",
+            "min",
+            "max",
+            "element",
+            "table",
+            "negative_table",
+        }
 
         cpm_cons = decompose_in_tree(cpm_cons, supported=supported)
         # safening after decompose here, need to safen toplevel elements too
@@ -358,7 +371,7 @@ class CPM_pumpkin(SolverInterface):
 
     def to_predicate(self, cpm_expr):
         """ """
-        from pumpkin_py import Comparator, Predicate
+        from pumpkin_solver_py import Comparator, Predicate
 
         if isinstance(cpm_expr, _BoolVarImpl):
             if isinstance(cpm_expr, NegBoolView):
@@ -445,7 +458,7 @@ class CPM_pumpkin(SolverInterface):
         return args
 
     def _get_constraint(self, cpm_expr):
-        from pumpkin_py import constraints
+        from pumpkin_solver_py import constraints
 
         if isinstance(cpm_expr, _BoolVarImpl):
             # base case, just var or ~var
@@ -522,6 +535,20 @@ class CPM_pumpkin(SolverInterface):
         elif isinstance(cpm_expr, GlobalConstraint):
             if cpm_expr.name == "alldifferent":
                 return [constraints.AllDifferent(self.solver_vars(cpm_expr.args))]
+            elif cpm_expr.name in ["table", "negative_table"]:
+                variables, table = cpm_expr.args
+
+                solver_variables = self.solver_vars(variables)
+
+                if cpm_expr.name == "table":
+                    return [constraints.Table(solver_variables, table)]
+                elif cpm_expr.name == "negative_table":
+                    return [constraints.NegativeTable(solver_variables, table)]
+                else:
+                    raise NotImplementedError(
+                        f"Unknown variant of table constraint {cpm_expr}"
+                    )
+
             elif cpm_expr.name == "cumulative":
                 start, dur, end, demand, cap = cpm_expr.args
                 assert all(is_num(d) for d in dur), (
@@ -573,7 +600,7 @@ class CPM_pumpkin(SolverInterface):
 
         :return: self
         """
-        from pumpkin_py import constraints
+        from pumpkin_solver_py import constraints
 
         # add new user vars to the set
         get_variables(cpm_expr_orig, collect=self.user_vars)
@@ -586,7 +613,6 @@ class CPM_pumpkin(SolverInterface):
                 constraint_tag = len(self.user_cons) + 1
                 self.user_cons[constraint_tag] = orig_expr
             for cpm_expr in self.transform(orig_expr):
-                tag = constraint_tag
                 if (
                     isinstance(cpm_expr, Operator) and cpm_expr.name == "->"
                 ):  # found implication
@@ -597,7 +623,8 @@ class CPM_pumpkin(SolverInterface):
                                 "_get_constraint should not return clauses"
                             )
                         self.pum_solver.add_implication(
-                            cons, self.solver_var(bv), tag=tag
+                            cons,
+                            self.solver_var(bv),
                         )
                 else:
                     solver_constraints = self._get_constraint(cpm_expr)
@@ -607,7 +634,7 @@ class CPM_pumpkin(SolverInterface):
                             raise ValueError(
                                 "_get_constraint should not return clauses"
                             )
-                        self.pum_solver.add_constraint(cons, tag=tag)
+                        self.pum_solver.add_constraint(cons)
 
         return self
 
